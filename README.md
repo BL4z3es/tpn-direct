@@ -45,17 +45,18 @@ tor_starting → tor_ready → tailnet_up → probing → going_direct → conne
 Paste [`policy/tailnet.hujson`](policy/tailnet.hujson) into the admin console (Access controls),
 then create two auth keys: one tagged `tag:vpn-server` and one tagged `tag:vpn-client`.
 
-### 2. VPN server (Docker)
+### 2. VPN server (systemd, deployed by easy-deploy)
+The node needs `tag:vpn-server` (alongside any other tag it has) and must advertise itself as
+an exit node:
 ```sh
-cd deploy/server
-TS_AUTHKEY=tskey-auth-... docker compose up -d --build
+sudo sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
+sudo tailscale set --advertise-exit-node
+sudo deploy/install.sh --ci-key     # builds /srv/tpn-direct, starts tpn-direct.service
 ```
-Or on bare Linux:
-```sh
-sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-tailscale up --auth-key=... --advertise-tags=tag:vpn-server --advertise-exit-node
-pip install . && tpn serve            # binds to this node's tailnet IP, port 8443
-```
+`tpn serve` binds the node's tailnet IP on port 8443 and answers tailnet peers only. After
+that, every push to `main` deploys through [easy-deploy](https://github.com/BL4z3es/easy-deploy)
+and rolls back if `/v1/health` stops answering. Settings: [`deploy/easy-deploy.conf`](deploy/easy-deploy.conf).
+No Caddy: the API is tailnet-only and checks the caller's address itself.
 
 ### 3. Client (Linux, root, `tor` and `tailscaled` installed)
 ```sh
