@@ -1,0 +1,43 @@
+// Tailnet policy for tpn-direct. Paste into the admin console (Access controls → JSON editor).
+// Authorization lives here, not in tpn code:
+//   * only tag:vpn-server nodes are auto-approved as exit nodes and expose the control API;
+//   * nothing is granted *to* clients, so under default-deny no one can connect to them.
+{
+	"tagOwners": {
+		"tag:vpn-server": ["autogroup:admin"],
+		"tag:vpn-client": ["autogroup:admin"],
+	},
+
+	"grants": [
+		// Clients may call the tpn control API on VPN servers...
+		{
+			"src": ["tag:vpn-client", "autogroup:member"],
+			"dst": ["tag:vpn-server"],
+			"ip":  ["tcp:8443"],
+		},
+		// ...and send their internet traffic through an exit node.
+		{
+			"src": ["tag:vpn-client", "autogroup:member"],
+			"dst": ["autogroup:internet"],
+			"ip":  ["*"],
+		},
+	],
+
+	// Only tagged servers become exit nodes without manual approval.
+	"autoApprovers": {
+		"exitNode": ["tag:vpn-server"],
+	},
+
+	"tests": [
+		{
+			"src":    "tag:vpn-client",
+			"accept": ["tag:vpn-server:8443"],
+			"deny":   ["tag:vpn-server:22", "tag:vpn-client:8443", "tag:vpn-client:22"],
+		},
+		{
+			// Servers do not get to reach into clients either.
+			"src":  "tag:vpn-server",
+			"deny": ["tag:vpn-client:22", "tag:vpn-client:8443"],
+		},
+	],
+}
