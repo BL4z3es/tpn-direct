@@ -30,6 +30,7 @@ packages = ["src/tpn"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["installer.py"]  # managed by easy-deploy
 target-version = "py311"
 
 [tool.ruff.lint]
