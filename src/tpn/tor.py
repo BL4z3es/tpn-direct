@@ -49,6 +49,13 @@ class TorConfig:
             "AvoidDiskWrites 1",
         ]
         if self.bridges:
+            # torrc splits this line on whitespace and has no quoting for it, so a path like
+            # C:\Program Files\...\lyrebird.exe would silently break.
+            if any(c.isspace() for c in self.obfs4proxy):
+                raise TorError(
+                    f"obfs4 transport path must not contain spaces: {self.obfs4proxy!r} "
+                    "(copy it to a path without spaces, or put its folder on PATH)"
+                )
             lines += ["UseBridges 1", f"ClientTransportPlugin obfs4 exec {self.obfs4proxy}"]
             for bridge in self.bridges:
                 # A newline would let a bridge string inject arbitrary torrc directives.
@@ -97,6 +104,8 @@ class TorManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
         except FileNotFoundError as e:

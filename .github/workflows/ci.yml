@@ -6,11 +6,19 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux (clients and servers), Windows x64, and Windows on ARM64 (native, not emulated).
+        os: [ubuntu-latest, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
       - run: uv run ruff check .
+        if: runner.os == 'Linux'
       - run: uv run ruff format --check .
+        if: runner.os == 'Linux'
+      - run: uv run python -c "import platform, sys; print(sys.version, platform.machine())"
       - run: uv run pytest

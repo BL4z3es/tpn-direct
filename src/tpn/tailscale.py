@@ -68,7 +68,7 @@ def control_healthy(status: dict[str, Any]) -> bool:
 
 class TailscaleClient:
     def __init__(
-        self, runner: Runner, *, binary: str = "tailscale", socket: Path | None = None
+        self, runner: Runner, *, binary: str = "tailscale", socket: str | Path | None = None
     ) -> None:
         self._runner = runner
         self._binary = binary

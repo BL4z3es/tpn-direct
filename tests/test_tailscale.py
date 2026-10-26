@@ -10,14 +10,15 @@ from .conftest import FakeRunner, ok_json, peer, status
 
 def test_commands_use_custom_socket():
     runner = FakeRunner(lambda a: ok_json(status()))
-    TailscaleClient(runner, socket=Path("/run/tpn.sock")).status()
+    TailscaleClient(runner, socket="/run/tpn.sock").status()
     assert runner.calls == [["tailscale", "--socket=/run/tpn.sock", "status", "--json"]]
 
 
 def test_up_passes_key_by_file_and_resets():
     runner = FakeRunner()
+    key = Path("/var/lib/tpn/authkey")
     TailscaleClient(runner).up(
-        auth_key_file=Path("/var/lib/tpn/authkey"),
+        auth_key_file=key,
         hostname="laptop",
         tags=["tag:vpn-client"],
         timeout=60,
@@ -27,7 +28,7 @@ def test_up_passes_key_by_file_and_resets():
         "up",
         "--reset",
         "--timeout=60s",
-        "--auth-key=file:/var/lib/tpn/authkey",
+        f"--auth-key=file:{key}",  # backslashes on Windows
         "--hostname=laptop",
         "--advertise-tags=tag:vpn-client",
     ]

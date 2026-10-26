@@ -82,6 +82,7 @@ class Agent:
         selector: ServerSelector,
         options: ConnectOptions,
         store: StateStore | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -92,6 +93,7 @@ class Agent:
         self.selector = selector
         self.options = options
         self.store = store
+        self._should_stop = should_stop
         self._clock = clock
         self._sleep = sleep
         self.phase = Phase.INIT
@@ -242,12 +244,25 @@ class Agent:
         self._set(Phase.DISCONNECTED)
 
     def run_forever(self, interval: float) -> None:
-        """Connect, then watch until interrupted (SIGINT/SIGTERM raise KeyboardInterrupt)."""
+        """Connect, then watch until interrupted or until `should_stop` returns True.
+
+        SIGINT/SIGTERM raise KeyboardInterrupt. Windows has no SIGTERM to send another
+        process, so `tpn disconnect` asks through `should_stop` there instead.
+        """
         try:
             self.connect()
             log.info("connected via %s (transport: %s)", self.server, self.transport)
             while True:
-                self._sleep(interval)
+                stop = wait_for(
+                    self._should_stop,
+                    interval,
+                    interval=min(1.0, interval),
+                    clock=self._clock,
+                    sleep=self._sleep,
+                )
+                if stop:
+                    log.info("disconnect requested")
+                    break
                 try:
                     self.tick()
                 except Exception:

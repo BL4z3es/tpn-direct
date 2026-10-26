@@ -282,3 +282,14 @@ def test_teardown_clears_exit_node_and_stops_everything(parts):
     assert parts["daemon"].shut_down
     assert not parts["tor"].running
     assert parts["store"].read()["phase"] == "disconnected"
+
+
+def test_run_forever_stops_when_asked_and_tears_down(parts):
+    ticks = []
+    requested = iter([False, False, True])
+    agent = Agent(**parts, options=ConnectOptions(), should_stop=lambda: next(requested))
+    agent.tick = lambda: ticks.append(1)
+    agent.run_forever(interval=1)
+    assert ticks == [1]
+    assert agent.phase is Phase.DISCONNECTED
+    assert parts["daemon"].shut_down

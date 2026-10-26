@@ -11,9 +11,16 @@ from typing import Annotated
 
 import typer
 
+from tpn import host
 from tpn.bootstrap import Agent, ConnectOptions
 from tpn.config import Settings
-from tpn.daemon import DaemonController, ManagedTailscaled, SystemdTailscaled
+from tpn.daemon import (
+    DaemonController,
+    ManagedTailscaled,
+    RegistryEnvironment,
+    SystemdTailscaled,
+    WindowsServiceTailscaled,
+)
 from tpn.discovery import ServerSelector
 from tpn.probe import DirectProbe
 from tpn.proc import SubprocessRunner, wait_for
@@ -39,13 +46,25 @@ def _tailscale(settings: Settings) -> TailscaleClient:
 
 
 def _daemon(settings: Settings, ts: TailscaleClient) -> DaemonController:
-    if settings.daemon_mode == "systemd":
+    mode = settings.daemon_mode
+    if mode == "systemd" and host.IS_WINDOWS:
+        raise typer.BadParameter("TPN_DAEMON_MODE=systemd needs Linux; use service on Windows")
+    if mode == "service" and not host.IS_WINDOWS:
+        raise typer.BadParameter("TPN_DAEMON_MODE=service needs Windows; use systemd on Linux")
+    if mode == "systemd":
         return SystemdTailscaled(ts, SubprocessRunner(), dropin=settings.systemd_dropin)
+    if mode == "service":
+        return WindowsServiceTailscaled(
+            ts,
+            SubprocessRunner(),
+            environment=RegistryEnvironment(settings.windows_service),
+            service=settings.windows_service,
+        )
     socket = settings.socket_path
     assert socket is not None
     return ManagedTailscaled(
         ts,
-        state_dir=socket.parent,
+        state_dir=settings.tailscaled_state_dir,
         socket=socket,
         binary=settings.tailscaled_bin,
         tun_name=settings.tun_name,
@@ -55,22 +74,11 @@ def _daemon(settings: Settings, ts: TailscaleClient) -> DaemonController:
 def _write_auth_key(settings: Settings) -> Path | None:
     if settings.auth_key is None:
         return None
-    path = settings.state_dir / "authkey"
-    settings.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = settings.state_dir / "authkey"  # connect() has already locked the directory down
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(settings.auth_key.get_secret_value())
     return path
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 @app.command()
@@ -94,11 +102,13 @@ def connect(
     if (
         previous
         and previous.get("phase") not in ("disconnected", "failed")
-        and _pid_alive(int(previous.get("pid", 0)))
+        and host.pid_alive(int(previous.get("pid", 0)))
     ):
         log.error("tpn is already running (pid %s); use `tpn disconnect`", previous["pid"])
         raise typer.Exit(1)
 
+    host.secure_dir(settings.state_dir)
+    settings.stop_file.unlink(missing_ok=True)
     ts = _tailscale(settings)
     generated_key = None if auth_key_file else _write_auth_key(settings)
     agent = Agent(
@@ -132,8 +142,12 @@ def connect(
             watchdog_failures=settings.watchdog_failures,
         ),
         store=store,
+        should_stop=settings.stop_file.exists,
     )
     signal.signal(signal.SIGTERM, signal.default_int_handler)
+    if host.IS_WINDOWS:
+        # Ctrl-Break, and closing the console window, arrive as SIGBREAK.
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     try:
         agent.run_forever(settings.watchdog_interval)
     except Exception as e:
@@ -153,7 +167,7 @@ def status(
     if state is None:
         typer.echo("not running")
         raise typer.Exit(1)
-    alive = _pid_alive(int(state.get("pid", 0)))
+    alive = host.pid_alive(int(state.get("pid", 0)))
     if not alive and state.get("phase") not in ("disconnected", "failed"):
         state["phase"] = "stale"
     if as_json:
@@ -167,13 +181,18 @@ def status(
 @app.command()
 def disconnect(timeout: float = 30.0) -> None:
     """Stop a running `tpn connect`."""
-    state = StateStore(Settings().state_file).read()
+    settings = Settings()
+    state = StateStore(settings.state_file).read()
     pid = int((state or {}).get("pid", 0))
-    if not pid or not _pid_alive(pid):
+    if not pid or not host.pid_alive(pid):
         typer.echo("not running")
         return
-    os.kill(pid, signal.SIGTERM)
-    if wait_for(lambda: not _pid_alive(pid), timeout, interval=0.5):
+    if host.IS_WINDOWS:
+        # os.kill would TerminateProcess it, skipping teardown and leaving the exit node set.
+        settings.stop_file.touch()
+    else:
+        os.kill(pid, signal.SIGTERM)
+    if wait_for(lambda: not host.pid_alive(pid), timeout, interval=0.5):
         typer.echo("disconnected")
     else:
         typer.echo(f"pid {pid} did not exit within {timeout:.0f}s", err=True)

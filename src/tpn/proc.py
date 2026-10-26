@@ -55,7 +55,9 @@ class SubprocessRunner:
             proc = subprocess.run(
                 list(args),
                 capture_output=True,
-                text=True,
+                # The CLI writes UTF-8; Windows' default code page would garble hostnames.
+                encoding="utf-8",
+                errors="replace",
                 env=dict(env) if env is not None else None,
                 timeout=timeout,
                 check=False,

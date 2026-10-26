@@ -15,8 +15,9 @@ network/ISP sees only encrypted WireGuard (or Tor) traffic, never the destinatio
 - **Who may connect is set by the tailnet policy** ([`policy/tailnet.hujson`](policy/tailnet.hujson)),
   not by tpn code. Only `tag:vpn-server` nodes are auto-approved as exit nodes and expose
   the API. Clients receive no inbound grants.
-- **Linux only for now.** Phones can use a server through the official Tailscale app's
-  exit-node menu, but without the Tor bootstrap (one-VPN-slot limit on iOS/Android).
+- **Clients: Linux and Windows (x64 and ARM64).** Servers: Linux. Phones can use a server
+  through the official Tailscale app's exit-node menu, but without the Tor bootstrap
+  (one-VPN-slot limit on iOS/Android).
 
 ## How a client connects
 
@@ -73,6 +74,36 @@ By default tpn runs its **own** tailscaled (`TPN_DAEMON_MODE=managed`, TUN `tpn0
 `/var/lib/tpn`). To steer the distro's `tailscaled.service` instead, use
 `TPN_DAEMON_MODE=systemd`. All settings are listed in [`src/tpn/config.py`](src/tpn/config.py).
 
+### Client (Windows x64 / ARM64, elevated prompt)
+Install [Tailscale for Windows](https://tailscale.com/download/windows), Python 3.11+, and the
+Tor Expert Bundle from [torproject.org](https://www.torproject.org/download/tor/). Then, in an
+**Administrator** PowerShell:
+```powershell
+pip install .
+$env:TPN_TOR_BIN = "C:\tor\tor\tor.exe"
+$env:TPN_AUTH_KEY = "tskey-auth-..."
+tpn connect                 # foreground; Ctrl-C disconnects
+tpn status                  # from another elevated shell
+tpn disconnect
+```
+How it differs from Linux:
+- **tailscaled is the Tailscale Windows service** (`TPN_DAEMON_MODE=service`, the default
+  there). tpn sets `HTTPS_PROXY` in the service's environment
+  (`HKLM\SYSTEM\CurrentControlSet\Services\Tailscale\Environment`), restarts it, and removes
+  the proxy again when it goes direct or disconnects. Other entries in that value are kept.
+- **State lives in `%ProgramData%\tpn`**, locked down to SYSTEM and Administrators (the auth
+  key is written there).
+- **`tpn disconnect` asks, it doesn't kill**: Windows has no SIGTERM, and killing the process
+  would skip teardown and leave the exit node set. It drops a `stop` file that `tpn connect`
+  checks every second.
+- **Bridges:** the Tor Expert Bundle ships `lyrebird.exe` rather than `obfs4proxy`; set
+  `TPN_OBFS4PROXY_BIN` to it. Its path can't contain spaces (a torrc limitation).
+- **ARM64:** Tailscale and Python run natively. Tor publishes no ARM64 Windows build; the x64
+  `tor.exe` runs under Windows 11's x64 emulation (Windows 10 on ARM needs the i686 build).
+- `TPN_DAEMON_MODE=managed` (a private `tailscaled.exe` on its own named pipe and Wintun
+  adapter) also exists but is untested; stop the Tailscale service first, since both daemons
+  manage the same firewall rules.
+
 ## Development
 ```sh
 uv sync
@@ -83,6 +114,8 @@ state machine is tested with fakes. Real end-to-end testing needs two machines: 
 [`docs/m0-runbook.md`](docs/m0-runbook.md) and [`scripts/e2e.sh`](scripts/e2e.sh).
 
 ## Known gaps (read before trusting this)
+- **Windows has only been tested in CI**, with fakes. The registry/service path has not been
+  run against a real Tailscale install yet; do that before relying on it.
 - **Unverified against a real block.** The M0 runbook has not been run yet. Whether
   tailscaled logs in cleanly over Tor, and which health strings mean "lost control", are
   assumptions until it is.

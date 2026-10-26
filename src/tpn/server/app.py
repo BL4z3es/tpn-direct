@@ -100,7 +100,7 @@ def create_app(
             "hostname": me.get("HostName"),
             "tailscale_ips": TailscaleClient.self_ips(status),
             "egress_ip": cached_egress(),
-            "load": os.getloadavg(),
+            "load": os.getloadavg() if hasattr(os, "getloadavg") else None,  # not on Windows
             "version": __version__,
         }
 

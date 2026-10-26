@@ -122,3 +122,13 @@ def test_stop_kills_when_terminate_is_ignored(tmp_path):
     tor.start(timeout=5)
     tor.stop()
     assert proc.returncode == -9
+
+
+def test_torrc_rejects_transport_path_with_spaces():
+    cfg = TorConfig(
+        data_dir="/x",
+        bridges=["obfs4 1.2.3.4:443 FP cert=abc iat-mode=0"],
+        obfs4proxy=r"C:\Program Files\Tor\lyrebird.exe",
+    )
+    with pytest.raises(TorError, match="spaces"):
+        cfg.render()

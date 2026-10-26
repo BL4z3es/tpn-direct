@@ -1,6 +1,6 @@
 import pytest
 
-from tpn.daemon import DaemonError, ManagedTailscaled, SystemdTailscaled
+from tpn.daemon import DaemonError, ManagedTailscaled, SystemdTailscaled, WindowsServiceTailscaled
 from tpn.proc import CmdResult
 from tpn.tailscale import TailscaleClient
 
@@ -78,3 +78,50 @@ def test_systemd_dropin_written_and_removed(tmp_path, clock):
     assert not dropin.exists()
     restarts = [c for c in runner.calls if c[:2] == ["systemctl", "restart"]]
     assert len(restarts) == 2
+
+
+class FakeServiceEnv:
+    def __init__(self, entries=None):
+        self.entries = list(entries or [])
+
+    def read(self):
+        return list(self.entries)
+
+    def write(self, entries):
+        self.entries = list(entries)
+
+
+def test_windows_service_sets_and_clears_proxy_keeping_other_entries(clock):
+    runner = FakeRunner(lambda a: ok_json(status()))
+    ts = TailscaleClient(runner)
+    env = FakeServiceEnv(["TS_DEBUG_FOO=1", "HTTPS_PROXY=http://stale:1"])
+    d = WindowsServiceTailscaled(ts, runner, environment=env, clock=clock, sleep=clock.sleep)
+
+    d.apply("http://127.0.0.1:9080")
+    assert env.entries == [
+        "TS_DEBUG_FOO=1",
+        "HTTPS_PROXY=http://127.0.0.1:9080",
+        "HTTP_PROXY=http://127.0.0.1:9080",
+    ]
+    restarts = [c for c in runner.calls if c[0] == "powershell.exe"]
+    assert len(restarts) == 1
+    assert "Restart-Service -Name 'Tailscale'" in restarts[0][-1]
+
+    d.shutdown()
+    assert env.entries == ["TS_DEBUG_FOO=1"]
+    d.shutdown()  # nothing left to remove: no further restart
+    assert len([c for c in runner.calls if c[0] == "powershell.exe"]) == 2
+
+
+def test_windows_service_restart_failure(clock):
+    def handler(args):
+        if args[0] == "powershell.exe":
+            return CmdResult(1, "", "Cannot open Tailscale service")
+        return ok_json(status())
+
+    runner = FakeRunner(handler)
+    d = WindowsServiceTailscaled(
+        TailscaleClient(runner), runner, environment=FakeServiceEnv(), clock=clock
+    )
+    with pytest.raises(DaemonError, match="Cannot open"):
+        d.apply(None)
