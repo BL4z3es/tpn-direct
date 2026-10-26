@@ -19,6 +19,8 @@ User=bl4z3
 WorkingDirectory=/srv/tpn-direct
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
+# The host's tailscaled, not the private one `tpn connect` starts under /var/lib/tpn.
+Environment=TPN_TAILSCALE_SOCKET=/var/run/tailscale/tailscaled.sock
 # Secrets live here, readable by bl4z3 only, never in the repository. The
 # dash means a missing file is not an error, so a host that has none still
 # boots. Point ENV_FILE in deploy/easy-deploy.conf at the same file if the
