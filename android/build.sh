@@ -50,8 +50,9 @@ for pair in aarch64:arm64-v8a armv7:armeabi-v7a x86_64:x86_64; do
 done
 
 # 4. build with upstream's own tooling
-make -C "$src" androidsdk
-make -C "$src" apk
+# From inside the checkout, not make -C: its Makefile builds PATH and GOBIN from $(PWD),
+# which make -C leaves pointing here, and gomobile would then pick up the wrong Go.
+(cd "$src" && make androidsdk && make apk)
 apk="$ROOT/dist/tpn-direct-$version-android.apk"
 cp "$src/tailscale-debug.apk" "$apk"
 
