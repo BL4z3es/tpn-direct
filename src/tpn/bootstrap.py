@@ -65,6 +65,7 @@ class ConnectOptions:
     hostname: str | None = None
     client_tags: Sequence[str] = ("tag:vpn-client",)
     allow_lan: bool = True
+    unattended: bool = False
     tor_bootstrap_timeout: float = 180.0
     control_timeout: float = 90.0
     direct_verify_timeout: float = 60.0
@@ -133,6 +134,7 @@ class Agent:
             auth_key_file=self.options.auth_key_file if needs_login else None,
             hostname=self.options.hostname,
             tags=self.options.client_tags,
+            unattended=self.options.unattended,
             timeout=self.options.control_timeout,
         )
         if not self._wait_control(self.options.control_timeout):
@@ -241,13 +243,26 @@ class Agent:
         self.server = self.server_ip = None
         self._set(Phase.DISCONNECTED)
 
-    def run_forever(self, interval: float) -> None:
-        """Connect, then watch until interrupted (SIGINT/SIGTERM raise KeyboardInterrupt)."""
+    def run_forever(
+        self, interval: float, *, should_stop: Callable[[], bool] = lambda: False
+    ) -> None:
+        """Connect, then watch until interrupted or `should_stop()` turns true.
+
+        SIGINT/SIGTERM (and Ctrl-C on Windows) raise KeyboardInterrupt. `should_stop` is how
+        `tpn disconnect` reaches the agent on Windows, where there is no SIGTERM to send.
+        """
         try:
             self.connect()
             log.info("connected via %s (transport: %s)", self.server, self.transport)
             while True:
-                self._sleep(interval)
+                waited = 0.0
+                while waited < interval and not should_stop():
+                    step = min(1.0, interval - waited)
+                    self._sleep(step)
+                    waited += step
+                if should_stop():
+                    log.info("disconnect requested")
+                    return
                 try:
                     self.tick()
                 except Exception:

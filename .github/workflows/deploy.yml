@@ -23,7 +23,7 @@ jobs:
 
       # The server installs the project the same way (deploy/easy-deploy.conf).
       - name: Install
-        run: pip install -e . pytest ruff
+        run: pip install -e '.[server]' pytest ruff
 
       - run: ruff check .
       - run: pytest

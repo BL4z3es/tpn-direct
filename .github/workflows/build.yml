@@ -1,0 +1,167 @@
+# Packages:
+#   client  tpn-<v>-linux-x86_64.tar.gz  tpn-<v>-linux-arm64.tar.gz
+#           tpn-<v>-windows-x86_64.zip   tpn-<v>-windows-arm64.zip   (tor bundled)
+#   server  tpn-server-<v>-linux.tar.gz                              (Linux only)
+#   android tpn-direct-<v>-android.apk
+# A v* tag publishes them all as a GitHub release.
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']  # path filters do not apply to tag pushes: a tag always builds
+    paths:
+      - 'src/**'
+      - 'android/**'
+      - 'packaging/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tor-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: packaging/fetch-tor.sh windows-x86_64 tor-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tor-windows-x86_64
+          path: tor-bundle
+          retention-days: 1
+
+  client:
+    needs: tor-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: the binary needs the glibc it was built on or newer (2.35+).
+          - { platform: linux-x86_64, os: ubuntu-22.04 }
+          - { platform: linux-arm64, os: ubuntu-22.04-arm }
+          - { platform: windows-x86_64, os: windows-latest }
+          # Native ARM64 tpn.exe; the bundled tor.exe is x64 and runs under emulation.
+          - { platform: windows-arm64, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check the interpreter matches the target CPU
+        run: |
+          arch=$(python -c 'import platform; print(platform.machine().lower())')
+          echo "python is $arch"
+          case "${{ matrix.platform }}" in
+            *arm64) [[ $arch == arm64 || $arch == aarch64 ]] ;;
+            *x86_64) [[ $arch == x86_64 || $arch == amd64 ]] ;;
+          esac
+      - run: python -m pip install . "pyinstaller>=6.10"
+      - uses: actions/download-artifact@v4
+        if: startsWith(matrix.platform, 'windows')
+        with:
+          name: tor-windows-x86_64
+          path: tor-bundle
+      - name: Build
+        run: |
+          args=(--platform "${{ matrix.platform }}")
+          [[ ${{ matrix.platform }} == windows* ]] && args+=(--tor-bundle tor-bundle)
+          python packaging/build_client.py "${args[@]}"
+      - name: Smoke test
+        run: |
+          exe=build/${{ matrix.platform }}/bin/tpn
+          [[ -f $exe.exe ]] && exe=$exe.exe
+          "$exe" --help
+          set +e
+          "$exe" serve; code=$?
+          set -e
+          [[ $code == 2 ]] || { echo "serve should refuse in a client build (got $code)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.platform }}
+          path: dist/*
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - run: packaging/build_server.sh
+      - name: Smoke test
+        run: |
+          tar -xzf dist/tpn-server-*-linux.tar.gz -C "$RUNNER_TEMP"
+          python -m venv "$RUNNER_TEMP/env"
+          "$RUNNER_TEMP/env/bin/pip" install "$(ls "$RUNNER_TEMP"/tpn-server-*/tpn_direct-*.whl)[server]"
+          "$RUNNER_TEMP/env/bin/python" -c 'import tpn.server.app'
+          bash -n "$RUNNER_TEMP"/tpn-server-*/install.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: dist/*
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
+      - name: Build APK
+        env:
+          TPN_KEYSTORE_B64: ${{ secrets.TPN_KEYSTORE_B64 }}
+          TPN_KEYSTORE_PASS: ${{ secrets.TPN_KEYSTORE_PASS }}
+          TPN_KEY_ALIAS: ${{ secrets.TPN_KEY_ALIAS }}
+          TPN_KEY_PASS: ${{ secrets.TPN_KEY_PASS }}
+        run: android/build.sh
+      - name: Check the APK carries tor for each ABI
+        run: |
+          apk=$(ls dist/tpn-direct-*-android.apk)
+          unzip -l "$apk" | tee "$RUNNER_TEMP/apk.txt" | grep -E 'lib/.*/lib(Tor|gojni)\.so'
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            grep -q "lib/$abi/libTor.so" "$RUNNER_TEMP/apk.txt" || { echo "no tor for $abi"; exit 1; }
+          done
+          aapt=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -n1)
+          "$aapt" dump badging "$apk" | head -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [client, server, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: client-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-linux
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: dist
+      - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

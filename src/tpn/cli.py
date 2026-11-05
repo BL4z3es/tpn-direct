@@ -11,9 +11,15 @@ from typing import Annotated
 
 import typer
 
+from tpn import host as plat
 from tpn.bootstrap import Agent, ConnectOptions
 from tpn.config import Settings
-from tpn.daemon import DaemonController, ManagedTailscaled, SystemdTailscaled
+from tpn.daemon import (
+    DaemonController,
+    ManagedTailscaled,
+    SystemdTailscaled,
+    WindowsServiceTailscaled,
+)
 from tpn.discovery import ServerSelector
 from tpn.probe import DirectProbe
 from tpn.proc import SubprocessRunner, wait_for
@@ -39,6 +45,11 @@ def _tailscale(settings: Settings) -> TailscaleClient:
 
 
 def _daemon(settings: Settings, ts: TailscaleClient) -> DaemonController:
+    if settings.daemon_mode == "windows":
+        return WindowsServiceTailscaled(ts, SubprocessRunner(), service=settings.windows_service)
+    if plat.IS_WINDOWS:
+        log.error("TPN_DAEMON_MODE=%s is not available on Windows", settings.daemon_mode)
+        raise typer.Exit(2)
     if settings.daemon_mode == "systemd":
         return SystemdTailscaled(ts, SubprocessRunner(), dropin=settings.systemd_dropin)
     socket = settings.socket_path
@@ -63,14 +74,7 @@ def _write_auth_key(settings: Settings) -> Path | None:
     return path
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+_pid_alive = plat.pid_alive
 
 
 @app.command()
@@ -88,6 +92,10 @@ def connect(
 ) -> None:
     """Connect to a VPN server and stay in the foreground watching the tunnel."""
     _setup_logging(verbose)
+    if not plat.is_admin():
+        what = "an elevated (Administrator) prompt" if plat.IS_WINDOWS else "root"
+        log.error("tpn connect needs %s: it reconfigures tailscaled", what)
+        raise typer.Exit(1)
     settings = Settings()
     store = StateStore(settings.state_file)
     previous = store.read()
@@ -108,6 +116,9 @@ def connect(
                 http_tunnel_port=settings.tor_http_port,
                 bridges=settings.tor_bridges,
                 obfs4proxy=settings.obfs4proxy_bin,
+                geoip_dir=Path(settings.tor_bin).parent / "data"
+                if Path(settings.tor_bin).is_absolute()
+                else None,
             ),
             tor_binary=settings.tor_bin,
         ),
@@ -130,18 +141,24 @@ def connect(
             control_timeout=settings.control_timeout,
             direct_verify_timeout=settings.direct_verify_timeout,
             watchdog_failures=settings.watchdog_failures,
+            unattended=plat.IS_WINDOWS,
         ),
         store=store,
     )
     signal.signal(signal.SIGTERM, signal.default_int_handler)
+    if hasattr(signal, "SIGBREAK"):  # Ctrl-Break, and closing the console window, on Windows
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+    stop_file = settings.stop_file
+    stop_file.unlink(missing_ok=True)
     try:
-        agent.run_forever(settings.watchdog_interval)
+        agent.run_forever(settings.watchdog_interval, should_stop=stop_file.exists)
     except Exception as e:
         log.error("connect failed: %s", e)
         raise typer.Exit(1) from None
     finally:
         if generated_key is not None:
             generated_key.unlink(missing_ok=True)
+        stop_file.unlink(missing_ok=True)
 
 
 @app.command()
@@ -167,12 +184,18 @@ def status(
 @app.command()
 def disconnect(timeout: float = 30.0) -> None:
     """Stop a running `tpn connect`."""
-    state = StateStore(Settings().state_file).read()
+    settings = Settings()
+    state = StateStore(settings.state_file).read()
     pid = int((state or {}).get("pid", 0))
     if not pid or not _pid_alive(pid):
         typer.echo("not running")
         return
-    os.kill(pid, signal.SIGTERM)
+    # The agent polls for this file every second and tears down cleanly. On Windows it is the
+    # only way: os.kill() there is TerminateProcess, which would skip the teardown.
+    settings.stop_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.stop_file.touch()
+    if not plat.IS_WINDOWS:
+        os.kill(pid, signal.SIGTERM)
     if wait_for(lambda: not _pid_alive(pid), timeout, interval=0.5):
         typer.echo("disconnected")
     else:
@@ -189,12 +212,19 @@ def serve(
     wait: Annotated[float, typer.Option(help="Seconds to wait for tailscale.")] = 120.0,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Run the VPN-server control API. tailscale must already be up as an exit node."""
-    import uvicorn
-
-    from tpn.server.app import create_app
-
+    """Run the VPN-server control API (Linux only). tailscale must be up as an exit node."""
     _setup_logging(verbose)
+    if not plat.IS_LINUX:
+        log.error("tpn serve runs on Linux only; this build is a client")
+        raise typer.Exit(2)
+    try:
+        import uvicorn
+
+        from tpn.server.app import create_app
+    except ImportError:
+        log.error("the server is not installed: pip install 'tpn-direct[server]'")
+        raise typer.Exit(2) from None
+
     settings = Settings()
     ts = _tailscale(settings)
 

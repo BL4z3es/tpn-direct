@@ -18,10 +18,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tpn import host
+
 log = logging.getLogger(__name__)
 
 _BOOTSTRAP_RE = re.compile(r"Bootstrapped (\d+)%")
 _EOF = object()
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _torrc_path(path: str) -> str:
+    """Forward slashes and no spaces: tor on Windows accepts both, and they need no quoting."""
+    return host.short_path(path).replace("\\", "/")
 
 
 class TorError(RuntimeError):
@@ -34,6 +42,7 @@ class TorConfig:
     http_tunnel_port: int = 9080
     bridges: list[str] = field(default_factory=list)
     obfs4proxy: str = "obfs4proxy"
+    geoip_dir: Path | None = None  # holds geoip/geoip6; the Windows bundle ships them
 
     @property
     def proxy_url(self) -> str:
@@ -41,15 +50,22 @@ class TorConfig:
 
     def render(self) -> str:
         lines = [
-            f"DataDirectory {self.data_dir}",
+            f"DataDirectory {_torrc_path(str(self.data_dir))}",
             "SocksPort 0",
             f"HTTPTunnelPort 127.0.0.1:{self.http_tunnel_port}",
             "Log notice stdout",
             "ClientOnly 1",
             "AvoidDiskWrites 1",
         ]
+        if self.geoip_dir is not None:
+            for option, name in (("GeoIPFile", "geoip"), ("GeoIPv6File", "geoip6")):
+                if (self.geoip_dir / name).is_file():
+                    lines.append(f"{option} {_torrc_path(str(self.geoip_dir / name))}")
         if self.bridges:
-            lines += ["UseBridges 1", f"ClientTransportPlugin obfs4 exec {self.obfs4proxy}"]
+            plugin = _torrc_path(self.obfs4proxy)
+            if " " in plugin:
+                raise TorError(f"pluggable transport path contains a space: {plugin!r}")
+            lines += ["UseBridges 1", f"ClientTransportPlugin obfs4 exec {plugin}"]
             for bridge in self.bridges:
                 # A newline would let a bridge string inject arbitrary torrc directives.
                 if "\n" in bridge or "\r" in bridge:
@@ -97,7 +113,11 @@ class TorManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
+                # tor would otherwise open a console window of its own on Windows.
+                creationflags=_NO_WINDOW,
             )
         except FileNotFoundError as e:
             raise TorError(f"{self._binary}: not found in PATH") from e

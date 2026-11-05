@@ -98,6 +98,7 @@ class TailscaleClient:
         hostname: str | None = None,
         tags: Sequence[str] = (),
         advertise_exit_node: bool = False,
+        unattended: bool = False,
         timeout: float = 120.0,
     ) -> None:
         # --reset makes the call idempotent and clears any exit node left over from a previous
@@ -112,6 +113,9 @@ class TailscaleClient:
             args.append(f"--advertise-tags={','.join(tags)}")
         if advertise_exit_node:
             args.append("--advertise-exit-node")
+        if unattended:
+            # Windows: keep running when the user who started it logs off.
+            args.append("--unattended")
         self._run(*args, timeout=timeout + 15)
 
     def set_exit_node(self, ip: str | None, *, allow_lan: bool = True) -> None:
