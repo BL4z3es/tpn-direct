@@ -6,6 +6,7 @@ node key lives in the state directory, so a restart does not need a new login.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import time
@@ -13,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from tpn.proc import Runner, build_env, wait_for
+from tpn.proc import PROXY_VARS, Runner, build_env, wait_for
 from tpn.tailscale import TailscaleClient, TailscaleError
 
 log = logging.getLogger(__name__)
@@ -176,4 +177,114 @@ class SystemdTailscaled:
     def shutdown(self) -> None:
         # Leave the system service running, but never pointed at a tor that is about to stop.
         if self._dropin.exists():
+            self.apply(None)
+
+
+class ServiceEnvironment(Protocol):
+    """Read and write a Windows service's `Environment` value (REG_MULTI_SZ)."""
+
+    def get(self, service: str) -> list[str]: ...
+    def set(self, service: str, values: list[str]) -> None: ...
+
+
+class RegistryServiceEnvironment:
+    """HKLM\\SYSTEM\\CurrentControlSet\\Services\\<name>\\Environment, read at service start."""
+
+    def _key(self, service: str, access: int) -> Any:
+        import winreg  # Windows only
+
+        path = rf"SYSTEM\CurrentControlSet\Services\{service}"
+        return winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, access)
+
+    def get(self, service: str) -> list[str]:
+        import winreg
+
+        try:
+            with self._key(service, winreg.KEY_READ) as key:
+                value, kind = winreg.QueryValueEx(key, "Environment")
+        except FileNotFoundError:
+            return []
+        return list(value) if kind == winreg.REG_MULTI_SZ else []
+
+    def set(self, service: str, values: list[str]) -> None:
+        import winreg
+
+        try:
+            with self._key(service, winreg.KEY_SET_VALUE) as key:
+                if values:
+                    winreg.SetValueEx(key, "Environment", 0, winreg.REG_MULTI_SZ, values)
+                else:
+                    with contextlib.suppress(FileNotFoundError):
+                        winreg.DeleteValue(key, "Environment")
+        except FileNotFoundError as e:
+            raise DaemonError(f"service {service!r} not found: is Tailscale installed?") from e
+        except PermissionError as e:
+            raise DaemonError("changing the Tailscale service needs an elevated prompt") from e
+
+
+class WindowsServiceTailscaled:
+    """The Tailscale Windows service, pointed at tor by its registry Environment value.
+
+    Go's net/http (and so tailscaled) reads HTTPS_PROXY from the environment before falling
+    back to the system's WinHTTP settings, so this steers only tailscaled, not the whole machine.
+    """
+
+    def __init__(
+        self,
+        ts: TailscaleClient,
+        runner: Runner,
+        *,
+        service: str = "Tailscale",
+        env: ServiceEnvironment | None = None,
+        ready_timeout: float = 45.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._ts = ts
+        self._runner = runner
+        self._service = service
+        self._env = env or RegistryServiceEnvironment()
+        self._ready_timeout = ready_timeout
+        self._clock = clock
+        self._sleep = sleep
+
+    def _wanted(self, proxy: str | None) -> list[str]:
+        keep = [v for v in self._env.get(self._service) if v.split("=", 1)[0] not in PROXY_VARS]
+        if proxy:
+            keep += [f"HTTPS_PROXY={proxy}", f"HTTP_PROXY={proxy}"]
+        return keep
+
+    def apply(self, proxy: str | None) -> None:
+        wanted = self._wanted(proxy)
+        changed = wanted != self._env.get(self._service)
+        if changed:
+            self._env.set(self._service, wanted)
+        if changed or not _responds(self._ts)():
+            self._restart()
+        ready = wait_for(
+            _responds(self._ts),
+            self._ready_timeout,
+            interval=0.5,
+            clock=self._clock,
+            sleep=self._sleep,
+        )
+        if not ready:
+            raise DaemonError(f"the {self._service} service did not come back after restart")
+
+    def _restart(self) -> None:
+        cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"Restart-Service -Name '{self._service}' -Force -ErrorAction Stop",
+        ]
+        result = self._runner.run(cmd, timeout=90)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise DaemonError(f"restarting the {self._service} service failed: {detail}")
+
+    def shutdown(self) -> None:
+        # Leave the service running for the user, but never pointed at a tor that is stopping.
+        if self._wanted(None) != self._env.get(self._service):
             self.apply(None)

@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,6 +8,9 @@ from tpn.server.app import create_app
 from tpn.tailscale import TailscaleClient
 
 from .conftest import FakeRunner, ok_json, status
+
+# The server is Linux-only (it reads the load average, binds the tailnet IP, etc.).
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the server runs on Linux only")
 
 PEER_IP = "100.64.0.11"
 

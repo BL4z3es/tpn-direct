@@ -1,0 +1,97 @@
+diff --git a/android/build.gradle.kts b/android/build.gradle.kts
+index f166454..95094b9 100644
+--- a/android/build.gradle.kts
++++ b/android/build.gradle.kts
+@@ -22,6 +22,8 @@ android {
+   compileSdk = androidApiLevel
+ 
+   defaultConfig {
++    // tpn-direct: a distinct app, installable next to the official Tailscale app.
++    applicationId = "io.github.bl4z3es.tpndirect"
+     minSdk = 26
+     targetSdk = androidApiLevel
+ 
+@@ -48,6 +50,9 @@ android {
+     compose = true
+   }
+ 
++  // tpn-direct: extract native libraries so the bundled libTor.so is an executable file.
++  packaging { jniLibs { useLegacyPackaging = true } }
++
+   flavorDimensions += "version"
+   namespace = "com.tailscale.ipn"
+ 
+diff --git a/android/src/main/AndroidManifest.xml b/android/src/main/AndroidManifest.xml
+index 97ecc92..053de9b 100644
+--- a/android/src/main/AndroidManifest.xml
++++ b/android/src/main/AndroidManifest.xml
+@@ -36,7 +36,7 @@
+         android:dataExtractionRules="@xml/data_extraction_rules"
+         android:banner="@drawable/tv_banner"
+         android:icon="@mipmap/ic_launcher"
+-        android:label="Tailscale"
++        android:label="@string/app_name"
+         android:requestLegacyExternalStorage="true"
+         android:roundIcon="@mipmap/ic_launcher_round"
+         android:enableOnBackInvokedCallback="true"
+diff --git a/android/src/main/java/com/tailscale/ipn/IPNService.kt b/android/src/main/java/com/tailscale/ipn/IPNService.kt
+index adb7b1f..e4886ef 100644
+--- a/android/src/main/java/com/tailscale/ipn/IPNService.kt
++++ b/android/src/main/java/com/tailscale/ipn/IPNService.kt
+@@ -246,6 +246,9 @@ open class IPNService : VpnService(), libtailscale.IPNService {
+         TSLog.d(TAG, "Disallowing app: $packageName")
+         disallowApp(b, packageName)
+       }
++      // tpn-direct: keep this app's own sockets (the bundled tor, its probes) off the VPN,
++      // or with UDP blocked, DERP-over-tor would have to travel through the tunnel it carries.
++      disallowApp(b, UninitializedApp.get().packageName)
+     }
+ 
+     return VPNServiceBuilder(b)
+diff --git a/android/src/main/res/values/strings.xml b/android/src/main/res/values/strings.xml
+index 591ce74..f45f19a 100644
+--- a/android/src/main/res/values/strings.xml
++++ b/android/src/main/res/values/strings.xml
+@@ -30,7 +30,7 @@
+     <string name="cancel">Cancel</string>
+ 
+     <!-- Strings for the about screen -->
+-    <string name="app_name" translatable="false">Tailscale</string>
++    <string name="app_name" translatable="false">tpn-direct</string>
+     <string name="tile_name" translatable="false">Tailscale</string>
+     <string name="version">Version</string>
+     <string name="about_view_header">About Tailscale</string>
+diff --git a/libtailscale/backend.go b/libtailscale/backend.go
+index bfd0a11..50d9c4d 100644
+--- a/libtailscale/backend.go
++++ b/libtailscale/backend.go
+@@ -19,6 +19,8 @@ import (
+ 
+ 	"tailscale.com/drive/driveimpl"
+ 	_ "tailscale.com/feature/condregister"
++
++	"github.com/tailscale/tailscale-android/tpn"
+ 	"tailscale.com/feature/taildrop"
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn"
+@@ -89,6 +91,12 @@ func start(dataDir, directFileRoot string, hwAttestationPref bool, appCtx AppCon
+ 		os.Setenv("HOME", dataDir)
+ 	}
+ 
++	// tpn-direct: tailscale's control, DERP and log traffic follow tpn's proxy choice (tor
++	// until the direct path is proven). Must precede the first proxy lookup.
++	if err := tpn.InstallProxy(); err != nil {
++		log.Printf("tpn: InstallProxy: %v", err)
++	}
++
+ 	return newApp(dataDir, directFileRoot, hwAttestationPref, appCtx)
+ }
+ 
+@@ -378,6 +386,7 @@ func (a *App) newBackend(dataDir string, appCtx AppContext, store *stateStore,
+ 	b.engine = engine
+ 	b.backend = lb
+ 	b.sys = sys
++	tpn.Start(lb, dialer, dataDir) // tpn-direct: tor bootstrap, go-direct, exit-node selection
+ 	go func() {
+ 		err := lb.Start(ipn.Options{})
+ 		if err != nil {
