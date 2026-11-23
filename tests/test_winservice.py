@@ -167,7 +167,13 @@ def test_install_repairs_an_existing_service():
 
     runner = FakeRunner(existing)
     winservice.install(r"C:\tpn\tpn.exe", runner=runner)
-    assert [call[1] for call in runner.calls] == ["create", "config", "description", "failure", "failureflag"]
+    assert [call[1] for call in runner.calls] == [
+        "create",
+        "config",
+        "description",
+        "failure",
+        "failureflag",
+    ]
 
 
 def test_install_reports_sc_errors():
