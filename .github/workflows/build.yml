@@ -1,6 +1,7 @@
 # Packages:
 #   client  tpn-<v>-linux-x86_64.tar.gz  tpn-<v>-linux-arm64.tar.gz
 #           tpn-<v>-windows-x86_64.zip   tpn-<v>-windows-arm64.zip   (tor bundled)
+#           tpn-<v>-windows-x86_64-setup.exe  tpn-<v>-windows-arm64-setup.exe
 #   server  tpn-server-<v>-linux.tar.gz                              (Linux only)
 #   android tpn-direct-<v>-android.apk
 # A v* tag publishes them all as a GitHub release.
@@ -62,7 +63,7 @@ jobs:
             *arm64) [[ $arch == arm64 || $arch == aarch64 ]] ;;
             *x86_64) [[ $arch == x86_64 || $arch == amd64 ]] ;;
           esac
-      - run: python -m pip install . "pyinstaller>=6.10"
+      - run: python -m pip install ".[gui]" "pyinstaller>=6.10"
       - uses: actions/download-artifact@v4
         if: startsWith(matrix.platform, 'windows')
         with:
@@ -73,6 +74,35 @@ jobs:
           args=(--platform "${{ matrix.platform }}")
           [[ ${{ matrix.platform }} == windows* ]] && args+=(--tor-bundle tor-bundle)
           python packaging/build_client.py "${args[@]}"
+      - name: Compile the Windows installer
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          find_iscc() {
+            local candidate
+            local candidates=(
+              "/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+              "/c/Program Files/Inno Setup 6/ISCC.exe"
+            )
+            if [[ -n ${LOCALAPPDATA:-} ]] && command -v cygpath >/dev/null; then
+              candidates+=("$(cygpath "$LOCALAPPDATA")/Programs/Inno Setup 6/ISCC.exe")
+            fi
+            for candidate in "${candidates[@]}"; do
+              [[ -f $candidate ]] && { printf '%s\n' "$candidate"; return; }
+            done
+            command -v ISCC.exe || command -v iscc || true
+          }
+          iscc=$(find_iscc)
+          if [[ -z $iscc ]]; then
+            # Preinstalled on windows-latest; ARM runners usually need Chocolatey.
+            choco install innosetup -y --no-progress
+            iscc=$(find_iscc)
+          fi
+          [[ -n $iscc ]] || { echo "Inno Setup 6 ISCC.exe was not found"; exit 1; }
+          stage=$(find "build/${{ matrix.platform }}" -mindepth 1 -maxdepth 1 \
+            -type d -name "tpn-*-${{ matrix.platform }}")
+          [[ -d $stage ]] || { echo "No staged Windows package found"; exit 1; }
+          python packaging/windows/build_installer.py \
+            --platform "${{ matrix.platform }}" --stage "$stage" --iscc "$iscc"
       - name: Smoke test
         run: |
           exe=build/${{ matrix.platform }}/bin/tpn
@@ -82,10 +112,18 @@ jobs:
           "$exe" serve; code=$?
           set -e
           [[ $code == 2 ]] || { echo "serve should refuse in a client build (got $code)"; exit 1; }
+          if [[ ${{ matrix.platform }} == windows* ]]; then
+            [[ -f build/${{ matrix.platform }}/bin/tpn-app.exe ]]
+            setup=(dist/tpn-*-${{ matrix.platform }}-setup.exe)
+            [[ ${#setup[@]} == 1 && -f ${setup[0]} ]] || { echo "No setup executable"; exit 1; }
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: client-${{ matrix.platform }}
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*-setup.exe
 
   server:
     runs-on: ubuntu-latest
