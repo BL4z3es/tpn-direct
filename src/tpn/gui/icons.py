@@ -40,8 +40,8 @@ def render_icon(kind: IconKind, size: int) -> object:
         return [(x * unit, y * unit) for x, y in coords]
 
     colour = ICON_COLOURS[kind]
-    edge = tuple(round(c * 0.67) for c in colour) + (255,)
-    fill = colour + (255,)
+    edge = (*(round(c * 0.67) for c in colour), 255)
+    fill = (*colour, 255)
     width = max(scale, round(4.5 * unit))
 
     # A rounded shield, rather than a text glyph, remains recognisable at 16 pixels.

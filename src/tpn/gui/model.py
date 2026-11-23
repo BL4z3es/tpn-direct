@@ -16,8 +16,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from tpn.control import CONNECTING_PHASES, ControlError, DaemonNotRunning, Unauthorized
-from tpn.control import PrefsDict, ServerInfo, Status
+from tpn.control import (
+    CONNECTING_PHASES,
+    ControlError,
+    DaemonNotRunning,
+    PrefsDict,
+    ServerInfo,
+    Status,
+    Unauthorized,
+)
 from tpn.gui.icons import IconKind
 
 log = logging.getLogger(__name__)
@@ -258,7 +265,9 @@ class AppModel:
             headline, icon = "Cannot talk to the tpn service", "failed"
         elif status is not None:
             if phase == "connected":
-                headline = "Connected via Tor" if status["transport"] == "tor" else "Connected directly"
+                headline = (
+                    "Connected via Tor" if status["transport"] == "tor" else "Connected directly"
+                )
                 icon = "tor" if status["transport"] == "tor" else "direct"
             elif phase in CONNECTING_PHASES:
                 headline, icon = _PHASE_HEADLINES.get(phase, "Connecting…"), "connecting"
@@ -285,10 +294,16 @@ class AppModel:
             tooltip = tooltip[:126] + "…"
 
         available = self._availability == "up" and status is not None
+        # A failed attempt with a retry pending is still the daemon's live attempt: it refuses a
+        # new connect (409) until it is disconnected, which also cancels the retry.
+        retrying = phase == "failed" and status is not None and status["retry_at"] is not None
+        idle = phase == "disconnected" or (phase == "failed" and not retrying)
         actions = ActionState(
-            connect=bool(available and not self._busy and phase in {"disconnected", "failed"}),
+            connect=bool(available and not self._busy and idle),
             disconnect=bool(
-                available and not self._busy and (phase in CONNECTING_PHASES | {"connected", "failed"})
+                available
+                and not self._busy
+                and (phase in CONNECTING_PHASES | {"connected"} or retrying)
             ),
             server=bool(available and not self._busy and phase not in CONNECTING_PHASES),
             prefs=bool(available and not self._busy),
@@ -332,10 +347,14 @@ class AppModel:
             self._availability = "up"
             self._poll_error = ""
             phase = status["phase"]
-            if notify:
+            # The first status after start (or after the daemon came back) is not news: only
+            # transitions this app saw happen are announced.
+            if notify and previous is not None:
                 if phase == "connected" and previous != "connected":
                     self._notifications.append(
-                        Notification("tpn connected", f"Connected to {status['server'] or 'a VPN server'}.")
+                        Notification(
+                            "tpn connected", f"Connected to {status['server'] or 'a VPN server'}."
+                        )
                     )
                 elif phase == "disconnected" and previous in CONNECTING_PHASES | {"connected"}:
                     if self._expect_disconnect:
@@ -449,7 +468,9 @@ class AppModel:
             except Exception as exc:
                 # Do not show a traceback or a raw exception: it may contain a request body.
                 log.warning("Control action %s failed with %s", name, type(exc).__name__)
-                self._set_action_error("The daemon request failed. Check the daemon logs for details.")
+                self._set_action_error(
+                    "The daemon request failed. Check the daemon logs for details."
+                )
             finally:
                 with self._lock:
                     self._busy = False
@@ -491,7 +512,9 @@ class AppModel:
 
         return self._submit("server", choose)
 
-    def toggle_pref(self, name: Literal["use_tor", "keep_tor", "auto_connect"], value: bool) -> bool:
+    def toggle_pref(
+        self, name: Literal["use_tor", "keep_tor", "auto_connect"], value: bool
+    ) -> bool:
         if name not in {"use_tor", "keep_tor", "auto_connect"} or not isinstance(value, bool):
             self._set_action_error("That preference is not supported.")
             return False
@@ -514,7 +537,7 @@ class AppModel:
         hostname = hostname.strip() if isinstance(hostname, str) else None
         if hostname and (len(hostname) > 63 or not _HOSTNAME_RE.fullmatch(hostname)):
             self._set_action_error(
-                "Hostname must be 1–63 letters, digits or hyphens, without leading/trailing hyphens."
+                "Hostname: 1-63 letters, digits or hyphens, not starting or ending with a hyphen."
             )
             return False
         if not all(isinstance(value, bool) for value in (use_tor, keep_tor, auto_connect)):
@@ -544,8 +567,12 @@ class AppModel:
         return self._submit("prefs", save, success="Settings saved.")
 
     def set_auth_key(self, key: str) -> bool:
-        """Send a key without retaining it in model state, exceptions, notices or future closures."""
-        if not isinstance(key, str) or not key.strip().startswith("tskey-") or len(key.strip()) <= 6:
+        """Send a key without keeping it in model state, exceptions, notices or closures."""
+        if (
+            not isinstance(key, str)
+            or not key.strip().startswith("tskey-")
+            or len(key.strip()) <= 6
+        ):
             self._set_action_error("Enter an auth key starting with 'tskey-'.")
             return False
         secret = key.strip()
@@ -562,10 +589,13 @@ class AppModel:
                 raise
             finally:
                 secret = ""
+
         return self._submit("save-key", save, success="Authentication key saved.")
 
     def clear_auth_key(self) -> bool:
-        return self._submit("clear-key", self.client.clear_auth_key, success="Authentication key cleared.")
+        return self._submit(
+            "clear-key", self.client.clear_auth_key, success="Authentication key cleared."
+        )
 
     def refresh_servers(self) -> bool:
         return self._submit("servers", self.client.servers)

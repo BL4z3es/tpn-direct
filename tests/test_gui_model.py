@@ -9,8 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from tpn.control import ControlError, DaemonNotRunning, Unauthorized
-from tpn.control import PrefsDict, ServerInfo, Status
+from tpn.control import ControlError, DaemonNotRunning, PrefsDict, ServerInfo, Status, Unauthorized
 from tpn.gui.model import (
     ActionState,
     AppModel,
@@ -75,8 +74,18 @@ class FakeClient:
         self._prefs = {**self._prefs, **patch}
         return self._prefs
 
-    def connect(self, *, server: str | None = None, use_tor: bool | None = None, keep_tor: bool | None = None) -> Status:
-        body = {k: v for k, v in {"server": server, "use_tor": use_tor, "keep_tor": keep_tor}.items() if v is not None}
+    def connect(
+        self,
+        *,
+        server: str | None = None,
+        use_tor: bool | None = None,
+        keep_tor: bool | None = None,
+    ) -> Status:
+        body = {
+            k: v
+            for k, v in {"server": server, "use_tor": use_tor, "keep_tor": keep_tor}.items()
+            if v is not None
+        }
         self.calls.append(("connect", body))
         if self._raise_on_other:
             raise self._raise_on_other
@@ -135,8 +144,8 @@ def test_every_phase_maps_to_icon_and_headline():
         {"phase": "failed", "detail": "tor timeout"},
         {"phase": "disconnected"},
     ]
+    # No model.start(): its poll thread would race these explicit polls for the statuses.
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
 
     expected: list[tuple[IconKind, str]] = [
         ("connecting", "Preparing connection…"),
@@ -154,7 +163,9 @@ def test_every_phase_maps_to_icon_and_headline():
         model.poll()
         state = model.state
         assert state.icon_kind == exp_icon, f"index {i}: icon {state.icon_kind} != {exp_icon}"
-        assert state.headline == exp_headline, f"index {i}: headline {state.headline} != {exp_headline}"
+        assert state.headline == exp_headline, (
+            f"index {i}: headline {state.headline} != {exp_headline}"
+        )
 
 
 def test_actions_enabled_per_state():
@@ -241,8 +252,18 @@ def test_choose_server_while_connected_reconnects():
         {"phase": "tor_starting"},
         {"phase": "connected", "transport": "direct", "connected_since": clock(), "server": "new"},
     ]
-    client._servers = [{"hostname": "new", "dns_name": "new.tail.ts.net", "ipv4": "100.64.0.1",
-                       "online": True, "healthy": True, "latency_ms": 10.0, "detail": "", "selected": False}]
+    client._servers = [
+        {
+            "hostname": "new",
+            "dns_name": "new.tail.ts.net",
+            "ipv4": "100.64.0.1",
+            "online": True,
+            "healthy": True,
+            "latency_ms": 10.0,
+            "detail": "",
+            "selected": False,
+        }
+    ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
     model.choose_server("new")
@@ -256,8 +277,18 @@ def test_choose_server_while_disconnected_only_updates_prefs():
     clock = FakeClock()
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
-    client._servers = [{"hostname": "new", "dns_name": "new.tail.ts.net", "ipv4": "100.64.0.1",
-                       "online": True, "healthy": True, "latency_ms": 10.0, "detail": "", "selected": False}]
+    client._servers = [
+        {
+            "hostname": "new",
+            "dns_name": "new.tail.ts.net",
+            "ipv4": "100.64.0.1",
+            "online": True,
+            "healthy": True,
+            "latency_ms": 10.0,
+            "detail": "",
+            "selected": False,
+        }
+    ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
     model.choose_server("new")
@@ -300,7 +331,9 @@ def test_poll_interval_switches_while_connecting():
         {"phase": "tailnet_up"},
         {"phase": "connected", "transport": "direct", "connected_since": clock()},
     ]
-    model = AppModel(client, clock=clock, action_runner=lambda f: f(), idle_interval=2.0, connecting_interval=0.5)
+    model = AppModel(
+        client, clock=clock, action_runner=lambda f: f(), idle_interval=2.0, connecting_interval=0.5
+    )
     model.poll()  # disconnected
     assert model.poll_interval == 2.0
     model.poll()  # tor_starting
@@ -314,13 +347,15 @@ def test_poll_interval_switches_while_connecting():
 def test_tooltip_length_capped_at_127():
     clock = FakeClock()
     client = FakeClient()
-    client.statuses = [{
-        "phase": "connected",
-        "transport": "direct",
-        "connected_since": clock(),
-        "server": "a" * 120,  # long server name
-        "retry_at": clock() + 10,
-    }]
+    client.statuses = [
+        {
+            "phase": "connected",
+            "transport": "direct",
+            "connected_since": clock(),
+            "server": "a" * 120,  # long server name
+            "retry_at": clock() + 10,
+        }
+    ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
     assert len(model.state.tooltip) <= 127
@@ -343,11 +378,13 @@ def test_auth_key_never_stored_in_model():
 def test_retry_countdown_displayed():
     clock = FakeClock(1000.0)
     client = FakeClient()
-    client.statuses = [{
-        "phase": "failed",
-        "detail": "timeout",
-        "retry_at": 1005.0,
-    }]
+    client.statuses = [
+        {
+            "phase": "failed",
+            "detail": "timeout",
+            "retry_at": 1005.0,
+        }
+    ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
     assert "Retrying in 5s" in model.state.retry or "Retrying now" in model.state.retry
@@ -363,10 +400,20 @@ def test_save_settings_validates_hostname():
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
     # Invalid hostname (too long, bad chars)
-    assert model.save_settings(hostname="a" * 64, tor_bridges=[], use_tor=True, keep_tor=False, auto_connect=False) is False
+    assert (
+        model.save_settings(
+            hostname="a" * 64, tor_bridges=[], use_tor=True, keep_tor=False, auto_connect=False
+        )
+        is False
+    )
     assert "Hostname" in model.state.error
     # Valid hostname
-    assert model.save_settings(hostname="valid-host", tor_bridges=[], use_tor=True, keep_tor=False, auto_connect=False) is True
+    assert (
+        model.save_settings(
+            hostname="valid-host", tor_bridges=[], use_tor=True, keep_tor=False, auto_connect=False
+        )
+        is True
+    )
     assert model.state.notice == "Settings saved."
 
 
@@ -376,13 +423,16 @@ def test_bridges_one_per_line():
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
-    assert model.save_settings(
-        hostname=None,
-        tor_bridges="bridge1\nbridge2\n\nbridge3  ",
-        use_tor=True,
-        keep_tor=False,
-        auto_connect=False,
-    ) is True
+    assert (
+        model.save_settings(
+            hostname=None,
+            tor_bridges="bridge1\nbridge2\n\nbridge3  ",
+            use_tor=True,
+            keep_tor=False,
+            auto_connect=False,
+        )
+        is True
+    )
     # Verify the update_prefs call received a clean list
     pref_calls = [call for call in client.calls if call[0] == "update_prefs"]
     assert any("tor_bridges" in str(call[1]) and "bridge1" in str(call[1]) for call in pref_calls)
@@ -407,7 +457,6 @@ def test_prefs_loaded_once():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}] * 5
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
 
     for _ in range(5):
         model.poll()
@@ -423,10 +472,26 @@ def test_servers_loaded_on_first_poll_when_connected():
         {"phase": "connected", "transport": "direct", "connected_since": clock()},
     ]
     client._servers = [
-        {"hostname": "vpn-1", "dns_name": "vpn-1.tail.ts.net", "ipv4": "100.64.0.1",
-         "online": True, "healthy": True, "latency_ms": 10.0, "detail": "", "selected": True},
-        {"hostname": "vpn-2", "dns_name": "vpn-2.tail.ts.net", "ipv4": "100.64.0.2",
-         "online": True, "healthy": None, "latency_ms": None, "detail": "", "selected": False},
+        {
+            "hostname": "vpn-1",
+            "dns_name": "vpn-1.tail.ts.net",
+            "ipv4": "100.64.0.1",
+            "online": True,
+            "healthy": True,
+            "latency_ms": 10.0,
+            "detail": "",
+            "selected": True,
+        },
+        {
+            "hostname": "vpn-2",
+            "dns_name": "vpn-2.tail.ts.net",
+            "ipv4": "100.64.0.2",
+            "online": True,
+            "healthy": None,
+            "latency_ms": None,
+            "detail": "",
+            "selected": False,
+        },
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
@@ -440,8 +505,16 @@ def test_refresh_servers_action():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     client._servers = [
-        {"hostname": "vpn-new", "dns_name": "vpn-new.tail.ts.net", "ipv4": "100.64.0.3",
-         "online": True, "healthy": True, "latency_ms": 5.0, "detail": "", "selected": False},
+        {
+            "hostname": "vpn-new",
+            "dns_name": "vpn-new.tail.ts.net",
+            "ipv4": "100.64.0.3",
+            "online": True,
+            "healthy": True,
+            "latency_ms": 5.0,
+            "detail": "",
+            "selected": False,
+        },
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
@@ -483,15 +556,17 @@ def test_clear_key_clears_stored_key():
 def test_tick_updates_time_fields():
     clock = FakeClock(1000.0)
     client = FakeClient()
-    client.statuses = [{
-        "phase": "connected",
-        "transport": "direct",
-        "connected_since": 900.0,
-        "retry_at": None,
-    }]
+    client.statuses = [
+        {
+            "phase": "connected",
+            "transport": "direct",
+            "connected_since": 900.0,
+            "retry_at": None,
+        }
+    ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()
-    assert "16m 40s" in model.state.connected_for
+    assert "1m 40s" in model.state.connected_for  # 1000 - 900
     clock.now = 1060.0
     model.tick()
     assert "2m 40s" in model.state.connected_for
@@ -502,7 +577,12 @@ def test_notification_on_connect():
     client = FakeClient()
     client.statuses = [
         {"phase": "tor_starting"},
-        {"phase": "connected", "transport": "direct", "connected_since": clock(), "server": "vpn-1"},
+        {
+            "phase": "connected",
+            "transport": "direct",
+            "connected_since": clock(),
+            "server": "vpn-1",
+        },
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
     model.poll()  # tor_starting
@@ -570,8 +650,14 @@ def test_model_close_stops_poll():
 
 
 def test_preferences_immutable_and_display_safe():
-    prefs = Preferences(use_tor=True, keep_tor=False, server="vpn-1", hostname="myhost",
-                        tor_bridges=("bridge1", "bridge2"), auto_connect=True)
+    prefs = Preferences(
+        use_tor=True,
+        keep_tor=False,
+        server="vpn-1",
+        hostname="myhost",
+        tor_bridges=("bridge1", "bridge2"),
+        auto_connect=True,
+    )
     d = prefs.as_dict()
     assert d["use_tor"] is True
     assert d["server"] == "vpn-1"
@@ -624,3 +710,20 @@ def test_offline_server_shows_healthy_none():
     assert row.online is False
     assert row.healthy is None
     assert row.latency_ms is None
+
+
+def test_failed_with_retry_offers_disconnect_not_connect():
+    clock = FakeClock(1000.0)
+    client = FakeClient()
+    client.statuses = [
+        {"phase": "failed", "detail": "tor: not found", "retry_at": 1015.0},
+        {"phase": "failed", "detail": "not logged in", "retry_at": None},
+    ]
+    model = AppModel(client, clock=clock, action_runner=lambda f: f())
+    model.poll()  # retry pending: the daemon still owns the attempt
+    assert model.state.actions.connect is False
+    assert model.state.actions.disconnect is True
+    assert model.state.retry == "Retrying in 15s"
+    model.poll()  # given up: a fresh connect is allowed, there is nothing to disconnect
+    assert model.state.actions.connect is True
+    assert model.state.actions.disconnect is False

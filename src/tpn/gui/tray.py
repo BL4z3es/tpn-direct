@@ -10,12 +10,34 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from tpn.gui.icons import ICON_SIZES, render_icon
-from tpn.gui.model import ActionState, ViewState
+from tpn.gui.icons import render_icon
+from tpn.gui.model import ViewState
 
 log = logging.getLogger(__name__)
+
+# Rendered large and scaled down by the OS, so it stays crisp on high-DPI displays.
+TRAY_SIZE = 64
+
+
+def tray_title(text: str) -> str:
+    """pystray's Xorg backend writes the title as latin-1; keep it to that on every platform."""
+    text = text.replace("\u2026", "...").replace("\u2014", "-").replace("\u2013", "-")
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def menu_signature(state: ViewState) -> tuple[Any, ...]:
+    """What the menu shows. The menu is rebuilt only when this changes, not on every tick."""
+    return (
+        state.headline,
+        state.actions,
+        state.prefs.use_tor,
+        state.prefs.keep_tor,
+        state.prefs.server,
+        tuple((s.hostname, s.healthy) for s in state.servers),
+    )
 
 
 def _lazy_import_pystray() -> Any:
@@ -50,26 +72,26 @@ class TrayController:
         self._icon_kind: str | None = None
         self._closed = False
         self._lock = threading.Lock()
-        self._notification_guard: set[str] = set()
+        self._menu_signature: tuple[Any, ...] | None = None
 
     def start(self) -> None:
         with self._lock:
             if self._icon is not None:
                 return
             pystray = _lazy_import_pystray()
-            image = self._render_image("disconnected", 16)
+            image = self._render_image("disconnected", TRAY_SIZE)
             self._icon = pystray.Icon(
                 name="tpn",
                 icon=image,
-                title="tpn: Checking tpn service…",
+                title=tray_title(self.model.state.tooltip),
                 menu=self._make_menu(),
             )
-            self._icon.visible = True
-            # run_detached spins up the pystray thread and returns immediately.
+            # run_detached starts pystray's thread and returns; its default setup makes the icon
+            # visible. Setting .visible before that fails: the icon has no thread yet.
             self._icon.run_detached()
 
     def _render_image(self, kind: str, size: int) -> Any:
-        # PIL Image is cached per kind at the 16 px tray size; the installer uses 256.
+        # Cached per kind and size.
         key = f"{kind}@{size}"
         if key not in self._images:
             self._images[key] = render_icon(kind, size)
@@ -78,79 +100,104 @@ class TrayController:
     def _make_menu(self) -> Any:
         pystray = _lazy_import_pystray()
         state = self.model.state
-        disabled = lambda text: pystray.MenuItem(text, None, enabled=False)
-        servers_menu = self._servers_menu(state)
         return pystray.Menu(
-            disabled(state.headline),
+            pystray.MenuItem(state.headline, None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                "Connect",
-                lambda: self._marshal_action(self.model.connect),
-                enabled=state.actions.connect,
-                default=True,
-            ),
-            pystray.MenuItem(
-                "Disconnect",
-                lambda: self._marshal_action(self.model.disconnect),
-                enabled=state.actions.disconnect,
-            ),
-            pystray.MenuItem("Server", servers_menu),
+            # Clicking the icon itself opens the window (the default item).
+            pystray.MenuItem("Open tpn…", self._on_open, default=True),
+            pystray.MenuItem("Connect", self._on_connect, enabled=state.actions.connect),
+            pystray.MenuItem("Disconnect", self._on_disconnect, enabled=state.actions.disconnect),
+            pystray.MenuItem("Server", self._servers_menu(state)),
             pystray.MenuItem(
                 "Route through Tor",
-                lambda: self._marshal_action(
-                    lambda: self.model.toggle_pref("use_tor", not state.prefs.use_tor)
-                ),
-                checked=lambda _: state.prefs.use_tor,
+                self._toggle("use_tor"),
+                checked=self._checked("use_tor"),
                 enabled=state.actions.prefs,
             ),
             pystray.MenuItem(
                 "Keep Tor",
-                lambda: self._marshal_action(
-                    lambda: self.model.toggle_pref("keep_tor", not state.prefs.keep_tor)
-                ),
-                checked=lambda _: state.prefs.keep_tor,
+                self._toggle("keep_tor"),
+                checked=self._checked("keep_tor"),
                 enabled=state.actions.prefs,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Open tpn…", lambda: self.marshal(self.on_show), default=False),
-            pystray.MenuItem("Quit", lambda: self.marshal(self.on_quit)),
+            pystray.MenuItem("Quit", self._on_quit),
         )
+
+    # pystray chooses how to call an action from its positional parameter count, defaults
+    # included: every callable handed to it takes exactly (icon, item), or (item) for
+    # `checked`, and nothing else. Values are bound by the factories below, never as defaults.
+
+    def _on_open(self, icon: Any, item: Any) -> None:
+        self.marshal(self.on_show)
+
+    def _on_quit(self, icon: Any, item: Any) -> None:
+        self.marshal(self.on_quit)
+
+    def _on_connect(self, icon: Any, item: Any) -> None:
+        self._marshal_action(self.model.connect)
+
+    def _on_disconnect(self, icon: Any, item: Any) -> None:
+        self._marshal_action(self.model.disconnect)
+
+    def _toggle(self, name: str) -> Callable[[Any, Any], None]:
+        def action(icon: Any, item: Any) -> None:
+            current = getattr(self.model.state.prefs, name)
+            self._marshal_action(lambda: self.model.toggle_pref(name, not current))
+
+        return action
+
+    def _checked(self, name: str) -> Callable[[Any], bool]:
+        def checked(item: Any) -> bool:
+            return bool(getattr(self.model.state.prefs, name))
+
+        return checked
+
+    def _pick(self, hostname: str | None) -> Callable[[Any, Any], None]:
+        def action(icon: Any, item: Any) -> None:
+            self._marshal_action(lambda: self.model.choose_server(hostname))
+
+        return action
+
+    def _is_server(self, hostname: str | None) -> Callable[[Any], bool]:
+        def checked(item: Any) -> bool:
+            return self.model.state.prefs.server == hostname
+
+        return checked
 
     def _servers_menu(self, state: ViewState) -> Any:
         pystray = _lazy_import_pystray()
-        items = []
-        if state.servers:
-            for server in state.servers:
-                suffix = " (unhealthy)" if server.healthy is False else ""
-                items.append(
-                    pystray.MenuItem(
-                        f"{server.hostname}{suffix}",
-                        lambda _, h=server.hostname: self._marshal_action(
-                            lambda: self.model.choose_server(h)
-                        ),
-                        checked=lambda _, h=server.hostname: state.prefs.server == h,
-                        radio=True,
-                        enabled=state.actions.server,
-                    )
-                )
-        items.append(
+        items = [
             pystray.MenuItem(
                 "Automatic",
-                lambda _: self._marshal_action(lambda: self.model.choose_server(None)),
-                checked=lambda _: state.prefs.server is None,
+                self._pick(None),
+                checked=self._is_server(None),
                 radio=True,
                 enabled=state.actions.server,
             )
-        )
+        ]
+        for server in state.servers:
+            suffix = " (unhealthy)" if server.healthy is False else ""
+            items.append(
+                pystray.MenuItem(
+                    f"{server.hostname}{suffix}",
+                    self._pick(server.hostname),
+                    checked=self._is_server(server.hostname),
+                    radio=True,
+                    enabled=state.actions.server,
+                )
+            )
         return pystray.Menu(*items)
 
     def _marshal_action(self, action: Callable[[], bool]) -> None:
         """Wrap an action so a failure keeps the tray responsive and surfaces a notice."""
+
         def wrapped() -> None:
             try:
                 action()
-            except Exception as exc:
-                log.debug("Tray action failed", exc_info=exc)
+            except Exception:
+                log.exception("tray action failed")
+
         self.marshal(wrapped)
 
     def refresh(self) -> None:
@@ -161,20 +208,17 @@ class TrayController:
             state = self.model.state
             # Update the icon image and tooltip when the kind changes.
             if state.icon_kind != self._icon_kind:
-                image = self._render_image(state.icon_kind, 16)
-                self._icon.icon = image
+                self._icon.icon = self._render_image(state.icon_kind, TRAY_SIZE)
                 self._icon_kind = state.icon_kind
-            # Tooltip and title are the same string on most platforms.
-            self._icon.title = state.tooltip
-            # Rebuild the menu if the server list or enabled actions changed.
-            self._icon.menu = self._make_menu()
-            # Fire any daemon notifications (connected / disconnected / failed) once.
+            title = tray_title(state.tooltip)
+            if self._icon.title != title:
+                self._icon.title = title
+            signature = menu_signature(state)
+            if signature != self._menu_signature:
+                self._menu_signature = signature
+                self._icon.menu = self._make_menu()
+            # The model hands out each notification exactly once.
             for notice in self.model.drain_notifications():
-                if notice.message in self._notification_guard:
-                    continue
-                self._notification_guard.add(notice.message)
-                if len(self._notification_guard) > 20:
-                    self._notification_guard.pop()
                 try:
                     if getattr(self._icon, "HAS_NOTIFICATION", True):
                         self._icon.notify(notice.message, title=notice.title)
@@ -193,19 +237,3 @@ class TrayController:
                 except Exception:
                     log.debug("Error stopping tray icon", exc_info=True)
                 self._icon = None
-
-
-class TrayControllerForTest:
-    """A no-op implementation for environments without pystray or a display."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def start(self) -> None:
-        pass
-
-    def refresh(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
