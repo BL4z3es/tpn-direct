@@ -232,6 +232,7 @@ def test_single_instance_posix(tmp_path):
         third.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX backend")
 def test_single_instance_signal_without_owner(tmp_path):
     from tpn.gui.single_instance import SingleInstance
 
@@ -302,6 +303,7 @@ def test_single_instance_windows_uses_session_objects():
         second.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX backend")
 def test_single_instance_failure_never_blocks_the_app(tmp_path):
     from tpn.gui.single_instance import SingleInstance
 
