@@ -158,6 +158,7 @@ def test_install_configures_service_dependencies_recovery_and_quoted_path():
         "actions=",
         "restart/10000/restart/30000/restart/60000",
     ]
+    assert runner.calls[4] == ["sc.exe", "failureflag", "tpn", "1"]
 
 
 def test_install_repairs_an_existing_service():
@@ -166,7 +167,7 @@ def test_install_repairs_an_existing_service():
 
     runner = FakeRunner(existing)
     winservice.install(r"C:\tpn\tpn.exe", runner=runner)
-    assert [call[1] for call in runner.calls] == ["create", "config", "description", "failure"]
+    assert [call[1] for call in runner.calls] == ["create", "config", "description", "failure", "failureflag"]
 
 
 def test_install_reports_sc_errors():

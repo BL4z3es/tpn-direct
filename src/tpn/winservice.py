@@ -199,6 +199,9 @@ def install(exe_path: str | os.PathLike[str], *, runner: Runner | None = None) -
             "restart/10000/restart/30000/restart/60000",
         ],
     )
+    # Without this flag the SCM restarts only after a crash; a daemon that fails and reports
+    # SERVICE_STOPPED with a non-zero exit code would otherwise stay down.
+    _sc(commands, ["failureflag", SERVICE_NAME, "1"])
 
 
 def uninstall(*, runner: Runner | None = None) -> None:

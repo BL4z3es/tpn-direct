@@ -13,7 +13,8 @@
   #error "Pass /DStagedDir=<staged package directory> to ISCC"
 #endif
 
-#define ProjectRoot SourcePath + "\.."
+; SourcePath is this script's directory (packaging\windows\, trailing backslash included).
+#define ProjectRoot SourcePath + "..\.."
 #ifndef IsppIncludePath
   #define IsppIncludePath ProjectRoot
 #endif
@@ -58,7 +59,7 @@ ArchitecturesAllowed={#AllowedArchitectures}
 ArchitecturesInstallIn64BitMode={#AllowedArchitectures}
 ; The icon is produced by the app workstream; the build also works before it exists.
 #if FileExists(ProjectRoot + "\packaging\icons\tpn.ico")
-SetupIconFile=packaging\icons\tpn.ico
+SetupIconFile={#ProjectRoot}\packaging\icons\tpn.ico
 #endif
 
 [Languages]
@@ -131,7 +132,7 @@ begin
   end;
 end;
 
-function PrepareToInstall(): String;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
