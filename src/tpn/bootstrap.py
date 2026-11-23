@@ -49,6 +49,10 @@ class BootstrapError(RuntimeError):
     pass
 
 
+class NeedsLoginError(BootstrapError):
+    """tailscaled has no node key and no auth key was given: retrying cannot fix it."""
+
+
 class TorLike(Protocol):
     @property
     def proxy_url(self) -> str: ...
@@ -85,6 +89,7 @@ class Agent:
         store: StateStore | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        on_phase: Callable[[Phase], None] | None = None,
     ) -> None:
         self.tor = tor
         self.daemon = daemon
@@ -95,6 +100,7 @@ class Agent:
         self.store = store
         self._clock = clock
         self._sleep = sleep
+        self._on_phase = on_phase
         self.phase = Phase.INIT
         self.transport: Transport | None = None
         self.server: str | None = None
@@ -129,7 +135,7 @@ class Agent:
         status = self.ts.status()
         needs_login = status.get("BackendState") == "NeedsLogin"
         if needs_login and self.options.auth_key_file is None:
-            raise BootstrapError("device is not logged in: provide an auth key (TPN_AUTH_KEY)")
+            raise NeedsLoginError("device is not logged in: provide an auth key (TPN_AUTH_KEY)")
         self.ts.up(
             auth_key_file=self.options.auth_key_file if needs_login else None,
             hostname=self.options.hostname,
@@ -291,6 +297,8 @@ class Agent:
             self.detail = detail
         log.debug("phase -> %s", phase)
         self._save()
+        if self._on_phase is not None:
+            self._on_phase(phase)
 
     def _save(self) -> None:
         if self.store is not None:
