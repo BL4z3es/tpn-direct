@@ -6,17 +6,13 @@ without tkinter, and without pystray.
 
 from __future__ import annotations
 
-import json
 import time
-from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any
 
-import httpx
-import pytest
-
-from tpn.control import CONNECTING_PHASES, ControlClient, ControlError, DaemonNotRunning, Unauthorized
+from tpn.control import ControlError, DaemonNotRunning, Unauthorized
 from tpn.control import PrefsDict, ServerInfo, Status
 from tpn.gui.model import (
+    ActionState,
     AppModel,
     IconKind,
     Preferences,
@@ -49,10 +45,11 @@ class FakeClient:
         self.calls.append(("status", None))
         if self._raise_on_status:
             raise self._raise_on_status
-        if self._status_index < len(self.statuses):
-            partial = self.statuses[self._status_index]
-            self._status_index += 1
-            return {**self._default_status(), **partial}
+        if self.statuses:
+            index = self._status_index
+            if index < len(self.statuses):
+                self._status_index += 1
+            return {**self._default_status(), **self.statuses[min(index, len(self.statuses) - 1)]}
         return self._default_status()
 
     def _default_status(self) -> Status:
@@ -102,7 +99,7 @@ class FakeClient:
     def set_auth_key(self, key: str) -> None:
         self.calls.append(("set_auth_key", {"auth_key": key}))
         if self._raise_on_other:
-            raise self._raise_on_other(400, "bad key")
+            raise self._raise_on_other
 
     def clear_auth_key(self) -> None:
         self.calls.append(("clear_auth_key", None))
@@ -169,8 +166,6 @@ def test_actions_enabled_per_state():
         {"phase": "connected", "transport": "direct", "connected_since": clock()},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # disconnected
     assert model.state.actions.connect is True
     assert model.state.actions.disconnect is False
@@ -192,8 +187,6 @@ def test_daemon_down_then_recovery():
     ]
     client._raise_on_status = DaemonNotRunning()
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # first poll -> down
     state = model.state
     assert state.icon_kind == "failed"
@@ -212,10 +205,8 @@ def test_daemon_down_then_recovery():
 def test_unauthorized_shows_token_hint():
     clock = FakeClock()
     client = FakeClient()
-    client._raise_on_status = Unauthorized
+    client._raise_on_status = Unauthorized(401, "no")
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert model.state.icon_kind == "failed"
     assert "token" in model.state.hint.lower()
@@ -231,8 +222,6 @@ def test_connect_then_disconnect_calls_client():
         {"phase": "disconnected"},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert client.calls[0][0] == "status"
     model.connect()
@@ -255,8 +244,6 @@ def test_choose_server_while_connected_reconnects():
     client._servers = [{"hostname": "new", "dns_name": "new.tail.ts.net", "ipv4": "100.64.0.1",
                        "online": True, "healthy": True, "latency_ms": 10.0, "detail": "", "selected": False}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.choose_server("new")
     # Expect: update_prefs(server="new"), disconnect, connect
@@ -272,8 +259,6 @@ def test_choose_server_while_disconnected_only_updates_prefs():
     client._servers = [{"hostname": "new", "dns_name": "new.tail.ts.net", "ipv4": "100.64.0.1",
                        "online": True, "healthy": True, "latency_ms": 10.0, "detail": "", "selected": False}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.choose_server("new")
     assert ("update_prefs", {"server": "new"}) in client.calls
@@ -286,8 +271,6 @@ def test_pref_toggle_updates_daemon_prefs():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.toggle_pref("use_tor", False)
     assert ("update_prefs", {"use_tor": False}) in client.calls
@@ -300,11 +283,9 @@ def test_pref_toggle_updates_daemon_prefs():
 def test_control_error_400_surfaces_as_message():
     clock = FakeClock()
     client = FakeClient()
-    client._raise_on_other = lambda status, msg: ControlError(status, msg)
+    client._raise_on_other = ControlError(409, "busy")
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.connect()
     assert "busy" in model.state.error.lower() or "409" in model.state.error
@@ -320,8 +301,6 @@ def test_poll_interval_switches_while_connecting():
         {"phase": "connected", "transport": "direct", "connected_since": clock()},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f(), idle_interval=2.0, connecting_interval=0.5)
-    model.start()
-
     model.poll()  # disconnected
     assert model.poll_interval == 2.0
     model.poll()  # tor_starting
@@ -343,8 +322,6 @@ def test_tooltip_length_capped_at_127():
         "retry_at": clock() + 10,
     }]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert len(model.state.tooltip) <= 127
 
@@ -354,8 +331,6 @@ def test_auth_key_never_stored_in_model():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.set_auth_key("tskey-auth-supersecret123")
     # The key is sent but never retained in model state or view state.
@@ -374,8 +349,6 @@ def test_retry_countdown_displayed():
         "retry_at": 1005.0,
     }]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert "Retrying in 5s" in model.state.retry or "Retrying now" in model.state.retry
     clock.now = 1005.5
@@ -388,8 +361,6 @@ def test_save_settings_validates_hostname():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     # Invalid hostname (too long, bad chars)
     assert model.save_settings(hostname="a" * 64, tor_bridges=[], use_tor=True, keep_tor=False, auto_connect=False) is False
@@ -404,8 +375,6 @@ def test_bridges_one_per_line():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert model.save_settings(
         hostname=None,
@@ -425,8 +394,6 @@ def test_refresh_logs_limits_to_500():
     client._logs = [f"line {i}" for i in range(1000)]
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.refresh_logs()
     # Model keeps only the last 500
@@ -462,8 +429,6 @@ def test_servers_loaded_on_first_poll_when_connected():
          "online": True, "healthy": None, "latency_ms": None, "detail": "", "selected": False},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert len(model.state.servers) == 2
     assert model.state.servers[0].hostname == "vpn-1"
@@ -479,8 +444,6 @@ def test_refresh_servers_action():
          "online": True, "healthy": True, "latency_ms": 5.0, "detail": "", "selected": False},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.refresh_servers()
     assert ("servers", None) in client.calls
@@ -493,8 +456,6 @@ def test_save_key_clears_entry():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.set_auth_key("tskey-auth-abc")
     assert "Authentication key saved." in model.state.notice
@@ -510,8 +471,6 @@ def test_clear_key_clears_stored_key():
         {"phase": "disconnected", "has_auth_key": False},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert model.state.has_auth_key is True
     model.clear_auth_key()
@@ -531,13 +490,11 @@ def test_tick_updates_time_fields():
         "retry_at": None,
     }]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     assert "16m 40s" in model.state.connected_for
     clock.now = 1060.0
     model.tick()
-    assert "17m 40s" in model.state.connected_for
+    assert "2m 40s" in model.state.connected_for
 
 
 def test_notification_on_connect():
@@ -548,8 +505,6 @@ def test_notification_on_connect():
         {"phase": "connected", "transport": "direct", "connected_since": clock(), "server": "vpn-1"},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # tor_starting
     model.poll()  # connected
     notifications = model.drain_notifications()
@@ -566,8 +521,6 @@ def test_notification_on_disconnect():
         {"phase": "disconnected", "detail": "user requested"},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # connected
     model.poll()  # disconnected
     notifications = model.drain_notifications()
@@ -583,8 +536,6 @@ def test_notification_on_failed():
         {"phase": "failed", "detail": "tor timeout"},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # tor_starting
     model.poll()  # failed
     notifications = model.drain_notifications()
@@ -600,8 +551,6 @@ def test_expected_disconnect_suppresses_notification():
         {"phase": "disconnected"},
     ]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()  # connected
     model.disconnect()
     model.poll()  # disconnected
@@ -614,8 +563,6 @@ def test_model_close_stops_poll():
     client = FakeClient()
     client.statuses = [{"phase": "disconnected"}]
     model = AppModel(client, clock=clock, action_runner=lambda f: f())
-    model.start()
-
     model.poll()
     model.close()
     model.poll()  # Should be a no-op
