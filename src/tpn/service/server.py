@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from tpn import __version__
-from tpn.control import API, Status, check_request
+from tpn.control import API, check_request
 from tpn.service.core import Service, ServiceError
 
 log = logging.getLogger(__name__)

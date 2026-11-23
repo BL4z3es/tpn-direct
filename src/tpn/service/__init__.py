@@ -26,7 +26,7 @@ from tpn.prefs import PrefsStore
 from tpn.proc import SubprocessRunner
 from tpn.service.acl import FileSecurity
 from tpn.service.core import Service
-from tpn.service.factory import build_agent, DefaultParts
+from tpn.service.factory import DefaultParts, build_agent
 from tpn.service.server import ControlServer
 from tpn.state import StateStore
 from tpn.tailscale import TailscaleClient

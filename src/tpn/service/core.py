@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from tpn import __version__, host
 from tpn.bootstrap import Phase
 from tpn.config import Settings
-from tpn.control import CONNECTING_PHASES, Status
+from tpn.control import Status
 from tpn.prefs import Prefs, PrefsStore
 from tpn.service.acl import FileSecurity
 from tpn.service.factory import build_agent
@@ -196,7 +196,8 @@ class Service:
             try:
                 should_stop = cancel.is_set
                 if self._daemon_stop is not None:
-                    should_stop = lambda: cancel.is_set() or self._daemon_stop.is_set()
+                    def should_stop():
+                        return cancel.is_set() or self._daemon_stop.is_set()
                 agent.run_forever(self.settings.watchdog_interval, should_stop=should_stop)
                 return
             except KeyboardInterrupt:

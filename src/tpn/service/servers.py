@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from tpn.tailscale import TailscaleClient, TailscaleError
+from tpn.tailscale import TailscaleClient
 
 log = logging.getLogger(__name__)
 
