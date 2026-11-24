@@ -1,0 +1,36 @@
+# The tpn daemon: owns tor and tailscaled, serves the control API on 127.0.0.1:9081.
+#   sudo install -m644 tpn.service /etc/systemd/system/
+#   sudo systemctl enable --now tpn
+# Settings go in a drop-in (systemctl edit tpn), e.g. Environment=TPN_DAEMON_MODE=systemd.
+[Unit]
+Description=tpn-direct VPN daemon (Tor-bootstrapped Tailscale exit node)
+Documentation=https://github.com/BL4z3es/tpn-direct
+Wants=network-online.target
+After=network-online.target
+# In systemd mode tpn restarts tailscaled.service; in managed mode it runs its own.
+After=tailscaled.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tpn daemon
+Restart=on-failure
+RestartSec=10
+# Teardown can restart tailscaled and wait for it.
+TimeoutStopSec=120
+KillMode=mixed
+StateDirectory=tpn
+StateDirectoryMode=0700
+Environment=TPN_STATE_DIR=/var/lib/tpn
+
+# tailscaled needs the TUN device, routing tables and raw sockets; tor needs nothing special.
+# Deliberately not over-hardened: tpn runs tailscaled and systemctl as children.
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

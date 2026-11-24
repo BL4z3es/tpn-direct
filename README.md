@@ -20,7 +20,7 @@ network/ISP sees only encrypted WireGuard (or Tor) traffic, never the destinatio
 | Platform | Package | How it steers tailscaled |
 |---|---|---|
 | Linux x86_64 / arm64 | `tpn-<v>-linux-*.tar.gz` (one binary; distro tor) | a private tailscaled, or a systemd drop-in |
-| Windows x64 / ARM64 | `tpn-<v>-windows-*.zip` (tor bundled) | `HTTPS_PROXY` in the Tailscale service's registry environment |
+| Windows x64 / ARM64 | `tpn-<v>-windows-*-setup.exe` installer, or `tpn-<v>-windows-*.zip` (tor bundled) | `HTTPS_PROXY` in the Tailscale service's registry environment |
 | Android | `tpn-direct-<v>-android.apk` | built into the app: a tailscale-android build with tor inside ([android/](android/README.md)) |
 | VPN server (Linux) | `tpn-server-<v>-linux.tar.gz` | n/a: `tpn serve` beside the host's tailscaled |
 
@@ -28,6 +28,23 @@ Every package is built by [`.github/workflows/build.yml`](.github/workflows/buil
 tag publishes them as a release. The bundled tor (Windows, Android) is the Tor Project's
 expert bundle, rejected unless its signature chains to the pinned Tor Browser key
 ([`packaging/fetch-tor.sh`](packaging/fetch-tor.sh)). iOS is not supported.
+
+## Daemon and app
+
+On a client, the agent runs as a **daemon** that owns tor and tailscaled: the `tpn` Windows
+service (LocalSystem, started at boot), or `tpn daemon` under systemd on Linux
+([`packaging/linux/tpn.service`](packaging/linux/tpn.service)). Everything else drives it over a
+local control API on `127.0.0.1:9081`, authenticated by a token file only the machine's users can
+read ([`docs/control-api.md`](docs/control-api.md)):
+
+- **`tpn-app`**, the Windows tray app: coloured status icon, connect/disconnect, server choice,
+  Tor options, auth key, logs. It runs unelevated; closing it never drops the VPN.
+- **`tpn up` / `tpn down` / `tpn status` / `tpn servers` / `tpn prefs` / `tpn set-key`** from a
+  terminal.
+
+The daemon retries failed connections with backoff, keeps the user's choices in
+`prefs.json`, can connect automatically at boot (`auto_connect`), and disconnects cleanly when the
+service stops. The old foreground `tpn connect` still works; the two refuse to run at once.
 
 ## How a client connects
 
@@ -80,16 +97,23 @@ No Caddy: the API is tailnet-only and checks the caller's address itself.
 **Android:** install the APK, log in with **Use an auth key** (a `tag:vpn-client` key), switch
 the VPN on. Details and caveats: [android/README.md](android/README.md).
 
-**Windows** (official Tailscale client installed; elevated PowerShell): unzip, then
-`$env:TPN_AUTH_KEY="tskey-auth-..."; .\tpn.exe connect`. See the zip's README.txt.
+**Windows** (official Tailscale client installed): run `tpn-<v>-windows-<arch>-setup.exe`. It
+installs and starts the `tpn` service and puts `tpn` in the tray. Open it, paste a `tag:vpn-client`
+auth key under Settings once, and press Connect. From the zip instead: elevated
+`.\tpn.exe service-install`, then `.\tpn.exe set-key` and `.\tpn.exe up`. See the zip's README.txt.
 
 **Linux** (root, `tor` and `tailscaled` installed), from the tarball or `pip install .`:
 ```sh
-TPN_AUTH_KEY=tskey-auth-... tpn connect      # foreground; Ctrl-C disconnects
-tpn status                                   # from another shell
-tpn disconnect
+sudo install -m644 tpn.service /etc/systemd/system/ && sudo systemctl enable --now tpn
+sudo tpn set-key                             # paste a tag:vpn-client key once
+sudo tpn up                                  # waits until connected
+sudo tpn status
+sudo tpn down
 ```
-Flags: `--no-tor` (skip Tor), `--keep-tor` (never drop it), `--server NAME`.
+Or without the daemon, in the foreground: `TPN_AUTH_KEY=tskey-auth-... tpn connect` (Ctrl-C
+disconnects; `tpn status` / `tpn disconnect` from another shell).
+Flags (`up` and `connect`): `--no-tor` (skip Tor), `--keep-tor` (never drop it), `--server NAME`.
+Persistent choices: `tpn prefs set keep_tor=true server=vpn-fra-1 auto_connect=true`.
 If Tor itself is blocked, set obfs4 bridges:
 `TPN_TOR_BRIDGES='["obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0"]'`.
 
@@ -110,7 +134,8 @@ state machine is tested with fakes. Real end-to-end testing needs two machines: 
 [`docs/m0-runbook.md`](docs/m0-runbook.md) and [`scripts/e2e.sh`](scripts/e2e.sh).
 
 ## Known gaps (read before trusting this)
-- **Windows and Android are new and have not been run against a real tailnet yet.** CI builds
+- **Windows (service, app, installer) and Android are new and have not been run against a real
+  tailnet yet.** CI builds
   and smoke-tests every package and unit-tests the logic, but nobody has connected with them.
 - **Unverified against a real block.** The M0 runbook has not been run yet. Whether
   tailscaled logs in cleanly over Tor, and which health strings mean "lost control", are

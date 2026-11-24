@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     watchdog_interval: float = 30.0
     watchdog_failures: int = 3
 
+    # the daemon's local control API (tpn/control.py, docs/control-api.md)
+    control_port: int = 9081
+
     @property
     def socket_path(self) -> Path | None:
         if self.tailscale_socket is not None:
@@ -70,3 +73,21 @@ class Settings(BaseSettings):
     @property
     def state_file(self) -> Path:
         return self.state_dir / "state.json"
+
+    @property
+    def token_file(self) -> Path:
+        """The control API's bearer token, rewritten by the daemon at every start."""
+        return self.state_dir / "control.token"
+
+    @property
+    def prefs_file(self) -> Path:
+        return self.state_dir / "prefs.json"
+
+    @property
+    def auth_key_file(self) -> Path:
+        """An auth key stored through the control API, kept until the next successful login."""
+        return self.state_dir / "authkey"
+
+    @property
+    def daemon_log(self) -> Path:
+        return self.state_dir / "tpnd.log"
